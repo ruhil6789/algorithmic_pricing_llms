@@ -1,0 +1,5 @@
+Title: Belief Correction Does Not Reliably Prevent LLM Pricing Collusion
+Author: Sachin Ruhil
+
+Abstract:
+Algorithmic pricing agents can sustain supra-competitive prices without explicit agreements. We test whether miscalibrated beliefs about rival retaliation cause collusion, and whether exogenous belief correction reduces supra-Nash pricing. In a Calvano duopoly, an LLM focal firm reports p_retaliation each period against a scripted rival (Nash default; one-period -0.10 retaliation after a cut >0.05). A 3-arm RCT compares control (no rival-policy text), placebo (irrelevant market note), and corrected (accurate rival policy). We complete 21 episodes (7x3x120 rounds) and evaluate elevation vs Nash on rounds 71-120. Collusion is rare but real: high-price episodes in 2/7 control and 2/7 corrected runs (prices near 7 vs Nash ~4.71), and 0/7 placebo. Mean elevation: control +0.44, placebo +0.02, corrected +0.78. Belief correction does not reliably reduce supra-Nash pricing; outcomes are path-dependent.

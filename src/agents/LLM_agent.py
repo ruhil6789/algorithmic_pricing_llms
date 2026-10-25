@@ -2,7 +2,7 @@
 LLM Agent Implementation for Market Simulation
 
 This module provides the LLMAgent class that interfaces with Mistral API
-for strategic pricing decisions in oligopoly market experiments.
+(or an OpenAI-compatible endpoint) for strategic pricing decisions.
 """
 
 import json
@@ -10,7 +10,7 @@ import logging
 import asyncio
 
 from mistralai import Mistral
-from typing import Dict, Type
+from typing import Dict, Optional, Type
 from pydantic import BaseModel, ValidationError, create_model
 
 from src.agents.base_agent import Agent
@@ -23,20 +23,20 @@ class LLMAgent(Agent):
     """
     LLM-based agent for strategic pricing decisions in oligopoly markets.
 
-    This agent uses Mistral API to make pricing decisions based on market history
-    and strategic context. It maintains a rolling memory window and validates
-    responses using Pydantic models.
+    Uses Mistral by default. If ``base_url`` is set, uses an OpenAI-compatible
+    chat completions API instead (e.g. Modal).
 
     Args:
         name: Unique identifier for the agent
         prefix: Prompt prefix defining agent's strategic context
-        api_key: Mistral API key for authentication
-        model_name: Mistral model to use (e.g., 'mistral-large-2411')
+        api_key: API key for authentication
+        model_name: Model id (e.g. 'mistral-large-2411' or gateway model name)
         response_model: Pydantic model for response validation
         prompt_template: Optional template for prompt formatting
         memory_length: Number of periods to maintain in memory (default: 100)
         env_params: Market environment parameters
         logger: Logger instance for experiment tracking
+        base_url: Optional OpenAI-compatible API base URL
     """
 
     def __init__(
@@ -50,6 +50,7 @@ class LLMAgent(Agent):
         memory_length: int = 100,
         env_params: dict = None,
         logger: logging.Logger = None,
+        base_url: Optional[str] = None,
     ):
         super().__init__(
             name=name,
@@ -61,6 +62,7 @@ class LLMAgent(Agent):
 
         self.api_key = api_key
         self.model_name = model_name
+        self.base_url = base_url
         self.response_model = response_model
         self.reponse_model_in_answer = self.__filter_in_answer_fields(response_model)
         self.prompt_template = prompt_template
@@ -72,18 +74,41 @@ class LLMAgent(Agent):
                 [
                     f'  "{name}": {field.annotation.__name__}'
                     for name, field in response_model.model_fields.items()
-                    if field.json_schema_extra.get("in_answer", True)
+                    if (field.json_schema_extra or {}).get("in_answer", True)
                 ]
             )
             + "\n}"
         )
 
+    async def _complete(self, messages: list) -> str:
+        """Call Mistral or OpenAI-compatible chat API; return message content."""
+        if self.base_url:
+            from openai import AsyncOpenAI
+
+            client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
+            response = await client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                temperature=0.7,
+                response_format={"type": "json_object"},
+            )
+            return response.choices[0].message.content
+
+        async with Mistral(api_key=self.api_key) as client:
+            response = await client.chat.complete_async(
+                model=self.model_name,
+                messages=messages,
+                temperature=0.7,
+                response_format={"type": "json_object"},
+            )
+            return response.choices[0].message.content
+
     async def act(self, prompt: str) -> Dict:
         """
         Execute pricing decision using LLM API.
 
-        Makes API call to Mistral with retry logic and validates response
-        using the configured Pydantic model.
+        Makes API call with retry logic and validates response using the
+        configured Pydantic model.
 
         Args:
             prompt: Market context and decision prompt
@@ -95,40 +120,41 @@ class LLMAgent(Agent):
             ValidationError: If response validation fails after all retries
             Exception: If API call fails after all retries
         """
-        async with Mistral(api_key=self.api_key) as client:
-            for attempt in range(1, MAX_RETRIES + 1):
-                self.logger.info(f"🔄 Attempt {attempt} for agent {self.name}")
-                try:
-                    response = await client.chat.complete_async(
-                        model=self.model_name,
-                        messages=[
-                            {"role": "system", "content": self.reponse_model_str},
-                            {"role": "system", "content": self.prefix},
-                            {"role": "user", "content": prompt},
-                        ],
-                        temperature=0.7,
-                        response_format={"type": "json_object"},
+        messages = [
+            {"role": "system", "content": self.reponse_model_str},
+            {"role": "system", "content": self.prefix},
+            {"role": "user", "content": prompt},
+        ]
+        for attempt in range(1, MAX_RETRIES + 1):
+            self.logger.info(f"🔄 Attempt {attempt} for agent {self.name}")
+            try:
+                content = await self._complete(messages)
+                parsed_json = json.loads(content)
+
+                ## Validate using Pydantic
+                validated = self.reponse_model_in_answer(**parsed_json)
+
+                return {"agent_name": self.name, "content": validated.dict()}
+
+            except (ValidationError, ValueError) as e:
+                self.logger.warning(
+                    f"Validation issue for {self.name} (attempt {attempt}): {e}"
+                )
+                if attempt == MAX_RETRIES:
+                    self.logger.error(
+                        f"❌ Validation failed after {MAX_RETRIES} attempts for agent {self.name}: {str(e)}"
                     )
-                    parsed_json = json.loads(response.choices[0].message.content)
-
-                    ## Validate using Pydantic
-                    validated = self.reponse_model_in_answer(**parsed_json)
-
-                    return {"agent_name": self.name, "content": validated.dict()}
-
-                except (ValidationError, ValueError) as e:
-                    if attempt == MAX_RETRIES:
-                        self.logger.error(
-                            f"❌ Validation failed after {MAX_RETRIES} attempts for agent {self.name}: {str(e)}"
-                        )
-                        raise e
-                except Exception as e:
-                    if attempt == MAX_RETRIES:
-                        self.logger.error(
-                            f"❌ Error after {MAX_RETRIES} attempts for agent {self.name}: {str(e)}"
-                        )
-                        raise e
-                await asyncio.sleep(RETRY_DELAY_SECONDS * attempt)
+                    raise e
+            except Exception as e:
+                self.logger.warning(
+                    f"API issue for {self.name} (attempt {attempt}): {e}"
+                )
+                if attempt == MAX_RETRIES:
+                    self.logger.error(
+                        f"❌ Error after {MAX_RETRIES} attempts for agent {self.name}: {str(e)}"
+                    )
+                    raise e
+            await asyncio.sleep(RETRY_DELAY_SECONDS * attempt)
 
     def __filter_in_answer_fields(self, model: Type[BaseModel]) -> Type[BaseModel]:
         """
@@ -147,7 +173,7 @@ class LLMAgent(Agent):
         in_answer_fields = {
             name: (field.annotation, field.default)
             for name, field in model.model_fields.items()
-            if field.json_schema_extra.get("in_answer", False)
+            if (field.json_schema_extra or {}).get("in_answer", False)
         }
         # Create a new model pydantic with only the filtered fields
         return create_model(model.__name__ + "Filtered", **in_answer_fields)

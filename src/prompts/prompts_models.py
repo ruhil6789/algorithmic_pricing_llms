@@ -3,7 +3,9 @@ from pydantic import BaseModel, Field
 
 
 def create_pricing_response_model(
-    include_wtp: bool = False, wtp_value: Optional[float] = None
+    include_wtp: bool = False,
+    wtp_value: Optional[float] = None,
+    include_retaliation_forecast: bool = False,
 ):
     fields = {
         "observations": (
@@ -24,6 +26,22 @@ def create_pricing_response_model(
         fields["willigness_to_pay"] = (
             float,
             Field(wtp_value, in_answer=False, keep_memory=False),
+        )
+
+    if include_retaliation_forecast:
+        fields["p_retaliation"] = (
+            float,
+            Field(
+                ...,
+                in_answer=True,
+                keep_memory=False,
+                description=(
+                    "Probability in [0, 1] that the rival will retaliate next "
+                    "period if you cut price this period."
+                ),
+                ge=0.0,
+                le=1.0,
+            ),
         )
 
     # Dynamically create class

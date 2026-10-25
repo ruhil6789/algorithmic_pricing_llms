@@ -167,6 +167,7 @@ class Experiment:
         start_date: datetime.date = datetime.date(2023, 1, 1),  # NEW PARAMETER
         rate_limit_seconds: float = 1.1,  # NEW: API rate limit
         max_retries: int = 20,  # NEW: Max retries per agent
+        extra_metadata: Dict[str, Any] = None,  # Optional research metadata
     ):
         self.name = name
         self.agents = agents
@@ -179,6 +180,7 @@ class Experiment:
         self.start_date = start_date
         self.rate_limit_seconds = rate_limit_seconds
         self.max_retries = max_retries
+        self.extra_metadata = extra_metadata or {}
 
         for idx, agent in enumerate(self.agents):
             agent.env_index = idx
@@ -276,6 +278,8 @@ class Experiment:
             "max_retries": self.max_retries,
             "start_time": datetime.datetime.now().isoformat(),
         }
+        if self.extra_metadata:
+            metadata.update(self.extra_metadata)
 
         if self.environment:
             metadata["environment"] = {
@@ -319,6 +323,9 @@ class Experiment:
             agent_order, prices
         )
         self._store_environment_outputs(round_num, prices, quantities, profits)
+        for agent in self.agents:
+            if hasattr(agent, "observe_market"):
+                agent.observe_market(prices, round_num)
         df_history = self._create_environment_dataframe()
         self.storage.save_environment_parquet(df_history)
         metadata = self.storage.load_metadata()
